@@ -45,38 +45,40 @@ def normalize_and_jitter(img, step=32):
         img.roll(dx, -1).roll(dy, -2)
     )
 
-def clamp(img):
-    return torch.clamp(img,min=0,max=1)
+def blur_gradients(grad, blur_sigma):
+    return torch.from_numpy(gaussian_filter(grad, blur_sigma))
 
-def blur_gradients(model, blur_sigma):
-    for param in model.parameters():
-        param.grad = torch.from_numpy(gaussian_filter(param.grad.numpy(), blur_sigma)).float()
-
-def gradient_descent(input, model, loss, iterations=50):
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.000000001, weight_decay=0.01)
-    J = torch.tensor([])
+def gradient_descent(input, model, loss, iterations=60):
     input = normalize_and_jitter(input)
+    input = torch.autograd.Variable(input, requires_grad=True)
+    lrs = [0.05, 0.0001, 0.000000001]
+    optimizer = torch.optim.Adam([input], lr=0.05, weight_decay=0.0005)
     #jitter_every = 5
-    blur_sigma = 0.0001
-    base_ratio = 0.5
-    scale_up_every = 10
-    scale = 25
+    data_blur = 0.4
+    grad_blur = 0.001
+    lr = 0
+    jitter_every = 10
     for i in range(iterations):
-        decreasing_ratio = 1-i/iterations
-        #if i != 0 and i % jitter_every == 0:
-            #input = normalize_and_jitter(input)
-        if i != 0 and i % scale_up_every == 0:
+        if i == 50 or i == 100:
+            lr += 1
             for o in optimizer.param_groups:
-                o['lr'] = o['lr'] * scale
-        input = clamp(transforms.functional.gaussian_blur(input, [5,5], blur_sigma))
+                o['lr'] = lrs[lr]
+        #if i > 0 and i < 75 and i % jitter_every == 0:
+            #input.data = normalize_and_jitter(input.data, step=1).clamp_(0, 1)
+        if i < 45 and i % 10 == 9: input.data = normalize_and_jitter(input.data, step=1).clamp_(0, 1)
+        input.data = transforms.functional.gaussian_blur(input.data, [7,7], data_blur).clamp_(0, 1)
         y_hat = model(input).softmax(1)
         J = -loss(y_hat)
         print("Iteration {}: loss = {}".format(i, J))
         optimizer.zero_grad()
+        input.retain_grad()
         J.backward(retain_graph=True)
-        blur_gradients(model, blur_sigma)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), base_ratio*decreasing_ratio)
+        torch.nn.utils.clip_grad_norm_(input, 1)
+        input.grad = blur_gradients(input.grad, grad_blur)
         optimizer.step()
+        if i == 124:
+            hidden_layer_output = forward_and_return_activation(model, input, model.features[20])
+            print(f"intermediate answer: {hidden_layer_output.softmax(1)}")
     J.detach()
     return input  # IMPLEMENT ME
 
